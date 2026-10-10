@@ -101,6 +101,25 @@ function showCapabilityNotes() {
   if (!MB) {
     notes.push({ kind: 'err', text: 'The media engine (vendor/mediabunny.min.js) failed to load, so nothing will work. Check that the vendor folder is next to index.html.' });
   }
+  if (!window.isSecureContext) {
+    // Browsers hide WebCodecs and the File System Access API on plain http pages.
+    const httpsUrl = location.protocol === 'http:' ? `https://${location.host}${location.pathname}${location.search}` : null;
+    const d = document.createElement('div');
+    d.className = 'note err';
+    d.textContent = 'This page was loaded over plain http, so the browser hides its video encoders and the Save As dialog. Precise cuts and re-encoding will not work until you ';
+    if (httpsUrl) {
+      const a = document.createElement('a');
+      a.href = httpsUrl; a.textContent = 'reload it over https';
+      d.appendChild(a);
+      d.appendChild(document.createTextNode('.'));
+    } else {
+      d.appendChild(document.createTextNode('open it from a secure (https) address.'));
+    }
+    box.innerHTML = '';
+    box.appendChild(d);
+    box.classList.remove('hidden');
+    return;
+  }
   if (!HAS_WEBCODECS) {
     notes.push({ kind: 'warn', text: 'This browser lacks WebCodecs. Quick (keyframe) cuts and container conversion still work, but Precise cuts and anything that needs re-encoding will not. Chrome, Edge or a recent Safari/Firefox are recommended.' });
   }
