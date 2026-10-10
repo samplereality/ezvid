@@ -1,0 +1,25 @@
+# macOS / editors
+.DS_Store
+._*
+.vscode/
+.idea/
+*.swp
+
+# Node (only needed if a dev tool is ever added; the app itself has no build)
+node_modules/
+npm-debug.log*
+
+# Local tool state
+.claude/settings.local.json
+
+# Test media and outputs — keep videos out of the repo
+*.mp4
+*.m4v
+*.mov
+*.mkv
+*.webm
+*.ts
+*.m2ts
+*.crdownload
+test-media/
+out/
