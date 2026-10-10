@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const APP_VERSION = '0.1.0'; // Semantic Versioning: MAJOR.MINOR.PATCH
+const APP_VERSION = '0.2.0'; // Semantic Versioning: MAJOR.MINOR.PATCH
 
 const MB = window.Mediabunny;
 const $ = (sel) => document.querySelector(sel);
@@ -17,7 +17,12 @@ const FORMATS = {
   mkv:  { label: 'MKV',  mime: 'video/x-matroska',  ext: '.mkv',  make: () => new MB.MkvOutputFormat() },
   mov:  { label: 'MOV',  mime: 'video/quicktime',   ext: '.mov',  make: () => new MB.MovOutputFormat() },
   webm: { label: 'WebM', mime: 'video/webm',        ext: '.webm', make: () => new MB.WebMOutputFormat() },
+  m4a:  { label: 'M4A (AAC audio)', mime: 'audio/mp4', ext: '.m4a', make: () => new MB.Mp4OutputFormat(), audioOnly: true },
+  wav:  { label: 'WAV (uncompressed audio)', mime: 'audio/wav', ext: '.wav', make: () => new MB.WavOutputFormat(), audioOnly: true },
 };
+const VIDEO_FORMAT_KEYS = ['mp4', 'mkv', 'mov', 'webm'];
+const AUDIO_FORMAT_KEYS = ['m4a', 'wav'];
+const RESOLUTIONS = [2160, 1440, 1080, 720, 480, 360];
 
 const CODEC_NAMES = {
   avc: 'H.264', hevc: 'H.265 / HEVC', vp9: 'VP9', av1: 'AV1', vp8: 'VP8', prores: 'ProRes',
@@ -26,7 +31,7 @@ const CODEC_NAMES = {
 const codecName = (c) => (c == null ? 'unknown codec' : (CODEC_NAMES[c] || (c.startsWith('pcm') ? 'PCM' : c.toUpperCase())));
 
 // Preferred audio codecs to transcode to, per container, when the source audio can't be copied.
-const AUDIO_FALLBACK = { mp4: ['aac', 'opus'], mov: ['aac'], mkv: ['aac', 'opus', 'vorbis'], webm: ['opus', 'vorbis'] };
+const AUDIO_FALLBACK = { mp4: ['aac', 'opus'], mov: ['aac'], mkv: ['aac', 'opus', 'vorbis'], webm: ['opus', 'vorbis'], m4a: ['aac'], wav: ['pcm-s16', 'pcm-s24', 'pcm-f32'] };
 
 // ---------- State ----------
 
@@ -50,7 +55,11 @@ const state = {
   sampleRate: 0,
   packetSink: null,     // EncodedPacketSink on the video track (for keyframe lookup)
   canvasSink: null,     // CanvasSink fallback preview when <video> can't play the file
+  snapSink: null,       // full-resolution CanvasSink for snapshots
   previewMode: 'video',
+  videoFormat: 'same',  // remembered output format choices
+  audioFormat: 'm4a',
+  savedResolution: 'keep',
   tab: 'extract',
   inPoint: 0,
   outPoint: 0,
@@ -188,7 +197,9 @@ async function loadFile(file) {
   state.trimAmount = 0;
 
   renderFileInfo();
+  populateResolution();
   $('#btnPrevKey').disabled = $('#btnNextKey').disabled = !state.packetSink;
+  $('#btnSnap').disabled = !state.videoTrack;
   $('#timeTotal').textContent = fmtTime(state.duration);
   $('#scrub').max = String(state.duration);
   $('#dropzone').classList.add('hidden');
@@ -224,7 +235,7 @@ async function resetState() {
   Object.assign(state, {
     file: null, input: null, duration: 0, firstTs: 0, formatKey: null, formatName: '',
     videoTrack: null, audioTrack: null, videoCodec: null, audioCodec: null, width: 0, height: 0, fps: 0, bitrate: 0,
-    channels: 0, sampleRate: 0, packetSink: null, canvasSink: null, previewMode: 'video',
+    channels: 0, sampleRate: 0, packetSink: null, canvasSink: null, snapSink: null, previewMode: 'video',
     inPoint: 0, outPoint: 0, trimAmount: 0, keyframe: { prev: null, next: null, for: null }, plan: null, conversion: null, running: false,
   });
   $('#frameCanvas').classList.add('hidden');
@@ -431,8 +442,8 @@ let kfToken = 0;
 async function refreshKeyframeInfo() {
   const info = $('#keyframeInfo');
   const quick = cutMode() === 'quick';
-  if (state.tab === 'convert' || !quick) { info.innerHTML = ''; return; }
-  if (!state.videoTrack || !state.packetSink) { info.innerHTML = 'No video track: cuts are exact at audio packet boundaries.'; return; }
+  if (state.tab === 'convert' || !quick || !hasVideoOut()) { info.innerHTML = ''; return; }
+  if (!state.packetSink) { info.innerHTML = ''; return; }
   const start = activeStart();
   const token = ++kfToken;
   try {
@@ -477,6 +488,45 @@ function cutMode() { return $('input[name=cutMode]:checked').value; }
 // ---------- Plan (what will be copied vs re-encoded) ----------
 
 let planToken = 0;
+
+function audioMode() { return $('#audioMode').value; }
+function hasVideoOut() { return !!state.videoTrack && audioMode() !== 'only'; }
+function hasAudioOut() { return !!state.audioTrack && audioMode() !== 'remove'; }
+function resolutionChoice() { const v = $('#resolution').value; return v === 'keep' ? null : Number(v); }
+function isPrecise() { return hasVideoOut() && state.tab !== 'convert' && cutMode() === 'precise'; }
+
+// The format dropdown lists video containers normally and audio containers in "audio only" mode.
+function applyFormatOptions() {
+  const sel = $('#outFormat');
+  const only = audioMode() === 'only';
+  const keys = only ? AUDIO_FORMAT_KEYS : ['same', ...VIDEO_FORMAT_KEYS];
+  sel.innerHTML = '';
+  for (const k of keys) {
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = k === 'same' ? 'Same as source' : FORMATS[k].label;
+    sel.appendChild(o);
+  }
+  const wanted = only ? state.audioFormat : state.videoFormat;
+  sel.value = keys.includes(wanted) ? wanted : keys[0];
+}
+
+// Offer only resolutions smaller than the source (measured on the short side, so portrait video works too).
+function populateResolution() {
+  const sel = $('#resolution');
+  sel.innerHTML = '<option value="keep">Keep</option>';
+  if (state.videoTrack) {
+    const short = Math.min(state.width, state.height);
+    for (const r of RESOLUTIONS.filter((r) => r < short)) {
+      const o = document.createElement('option');
+      o.value = String(r);
+      o.textContent = `${r}p`;
+      sel.appendChild(o);
+    }
+  }
+  sel.value = Array.from(sel.options).some((o) => o.value === state.savedResolution) ? state.savedResolution : 'keep';
+}
+
 async function refreshPlan() {
   refreshKeyframeInfo();
   const token = ++planToken;
@@ -484,54 +534,71 @@ async function refreshPlan() {
   const go = $('#btnGo');
   if (!state.input) return;
 
+  const only = audioMode() === 'only';
   const fmtKey = resolveFormatKey();
   const fmt = FORMATS[fmtKey];
   const of = fmt.make();
-  const precise = state.tab !== 'convert' && cutMode() === 'precise';
-  const plan = { fmtKey, fmt, video: null, audio: null, errors: [], notes: [], precise };
+  const videoOut = hasVideoOut();
+  const audioOut = hasAudioOut();
+  const precise = isPrecise();
+  const resizable = videoOut && (precise || state.tab === 'convert');
+  const resize = resizable ? resolutionChoice() : null;
+  const plan = { fmtKey, fmt, video: null, audio: null, errors: [], precise, resize, only };
+
+  $('#cutModeBox').classList.toggle('hidden', state.tab === 'convert' || !videoOut);
+  $('#resolutionRow').classList.toggle('hidden', !(resizable && $('#resolution').options.length > 1));
 
   // Video
-  if (state.videoTrack) {
+  if (videoOut) {
     const supported = of.getSupportedVideoCodecs();
     const canHold = state.videoCodec != null && supported.includes(state.videoCodec);
-    if (!precise && canHold) {
+    const mustEncode = precise || resize != null;
+    if (!mustEncode && canHold) {
       plan.video = { action: 'copy' };
-    } else if (!precise && state.tab !== 'convert') {
+    } else if (!mustEncode && state.tab !== 'convert') {
       plan.errors.push(state.videoCodec == null
         ? 'The video codec is not recognized, so it cannot be copied. Try Precise mode.'
         : `${fmt.label} cannot hold ${codecName(state.videoCodec)} video, so a Quick cut is not possible. Choose another format or use Precise mode.`);
+    } else if (!HAS_WEBCODECS) {
+      plan.errors.push('Re-encoding needs WebCodecs, which this browser lacks.');
+    } else if (!(await state.videoTrack.canDecode())) {
+      plan.errors.push(`This browser cannot decode ${codecName(state.videoCodec)} video, so it cannot re-encode it.`);
     } else {
-      if (!HAS_WEBCODECS) {
-        plan.errors.push('Re-encoding needs WebCodecs, which this browser lacks.');
-      } else if (!(await state.videoTrack.canDecode())) {
-        plan.errors.push(`This browser cannot decode ${codecName(state.videoCodec)} video, so it cannot re-encode it.`);
+      const encOpts = { width: state.width, height: state.height };
+      let codec = null;
+      if (canHold && (await MB.canEncodeVideo(state.videoCodec, encOpts))) codec = state.videoCodec;
+      else codec = await MB.getFirstEncodableVideoCodec(supported, encOpts);
+      if (!codec) {
+        plan.errors.push(`This browser cannot encode any video codec that ${fmt.label} supports.`);
       } else {
-        const encOpts = { width: state.width, height: state.height };
-        let codec = null;
-        if (canHold && (await MB.canEncodeVideo(state.videoCodec, encOpts))) codec = state.videoCodec;
-        else codec = await MB.getFirstEncodableVideoCodec(supported, encOpts);
-        if (!codec) plan.errors.push(`This browser cannot encode any video codec that ${fmt.label} supports.`);
-        else plan.video = { action: 'encode', codec, reason: precise ? 'frame-accurate cut' : `${fmt.label} cannot hold ${codecName(state.videoCodec)}` };
+        const reasons = [];
+        if (precise) reasons.push('frame-accurate cut');
+        if (resize != null) reasons.push(`resized to ${resize}p`);
+        if (!canHold) reasons.push(`${fmt.label} cannot hold ${codecName(state.videoCodec)}`);
+        plan.video = { action: 'encode', codec, reason: reasons.join(', ') };
       }
     }
   }
 
   // Audio
-  if (state.audioTrack) {
+  if (audioOut) {
     const supported = of.getSupportedAudioCodecs();
     const canHold = state.audioCodec != null && supported.includes(state.audioCodec);
     if (canHold) {
       plan.audio = { action: 'copy' };
-    } else if (!HAS_WEBCODECS) {
-      plan.errors.push(`${fmt.label} cannot hold ${codecName(state.audioCodec)} audio and this browser cannot re-encode it.`);
     } else {
       const aOpts = { numberOfChannels: state.channels, sampleRate: state.sampleRate };
       const candidates = (AUDIO_FALLBACK[fmtKey] || []).filter((c) => supported.includes(c)).concat(supported);
-      const codec = await MB.getFirstEncodableAudioCodec(candidates, aOpts);
+      let codec = null;
+      try { codec = await MB.getFirstEncodableAudioCodec(candidates, aOpts); } catch (_) { codec = null; }
       if (!codec) plan.errors.push(`This browser cannot encode any audio codec that ${fmt.label} supports.`);
       else plan.audio = { action: 'encode', codec, reason: `${fmt.label} cannot hold ${codecName(state.audioCodec)}` };
     }
   }
+
+  if (!state.videoTrack && !state.audioTrack) plan.errors.push('No video or audio track was found in this file.');
+  if (only && !state.audioTrack) plan.errors.push('This file has no audio track.');
+  if (!only && !videoOut && !audioOut) plan.errors.push('Nothing would be left in the output.');
 
   // Range sanity
   if (state.tab === 'extract' && state.outPoint - state.inPoint <= 0) plan.errors.push('Out must be after In.');
@@ -544,21 +611,25 @@ async function refreshPlan() {
   if (plan.video) lines.push(plan.video.action === 'copy'
     ? `Video: ${codecName(state.videoCodec)} copied (lossless).`
     : `Video: re-encoded to ${codecName(plan.video.codec)} (${plan.video.reason}).`);
+  else if (state.videoTrack) lines.push('Video: removed.');
   if (plan.audio) lines.push(plan.audio.action === 'copy'
     ? `Audio: ${codecName(state.audioCodec)} copied.`
     : `Audio: re-encoded to ${codecName(plan.audio.codec)} (${plan.audio.reason}).`);
+  else if (state.audioTrack) lines.push('Audio: removed.');
   for (const e of plan.errors) lines.push(`<span class="err">${escapeHtml(e)}</span>`);
   note.innerHTML = lines.map(escapeUnlessMarkup).join('<br>');
 
   $('#qualityRow').classList.toggle('hidden', !(plan.video && plan.video.action === 'encode'));
   go.disabled = plan.errors.length > 0 || state.running;
-  go.textContent = state.tab === 'extract' ? 'Save clip…' : state.tab === 'trim' ? 'Save trimmed video…' : `Save as ${fmt.label}…`;
+  const what = only ? 'audio' : state.tab === 'extract' ? 'clip' : 'video';
+  go.textContent = state.tab === 'extract' ? `Save ${what}…` : state.tab === 'trim' ? `Save trimmed ${what}…` : `Save as ${fmt.label.split(' ')[0]}…`;
 }
 
 function escapeUnlessMarkup(s) { return s.startsWith('<span') ? s : escapeHtml(s); }
 
 function resolveFormatKey() {
   const v = $('#outFormat').value;
+  if (audioMode() === 'only') return AUDIO_FORMAT_KEYS.includes(v) ? v : 'm4a';
   if (v !== 'same') return v;
   return state.formatKey || 'mp4';
 }
@@ -569,6 +640,8 @@ async function runJob() {
   if (state.running || !state.input || !state.plan || state.plan.errors.length) return;
   const plan = state.plan;
   const fmt = plan.fmt;
+  const videoOut = hasVideoOut();
+  const audioOut = hasAudioOut();
 
   // Work out the trim range.
   let start, end;
@@ -577,7 +650,7 @@ async function runJob() {
   else { start = undefined; end = undefined; }
 
   let snappedNote = '';
-  if (start != null && !plan.precise && state.packetSink) {
+  if (start != null && videoOut && !plan.precise && state.packetSink) {
     // Quick mode: snap the start to the keyframe at or before the requested point.
     const kf = state.keyframe.for === start ? state.keyframe.prev : (await state.packetSink.getKeyPacket(start, { metadataOnly: true }))?.timestamp ?? null;
     if (kf != null && kf < start) { snappedNote = ` (start snapped to keyframe at ${fmtTime(kf)})`; start = kf; }
@@ -587,10 +660,14 @@ async function runJob() {
 
   // Output name.
   const base = state.file.name.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_');
-  let suggested;
-  if (state.tab === 'extract') suggested = `${base}_clip_${fmtTime(state.inPoint, { ms: false }).replace(/:/g, '.')}-${fmtTime(state.outPoint, { ms: false }).replace(/:/g, '.')}${fmt.ext}`;
-  else if (state.tab === 'trim') suggested = `${base}_trimmed${fmt.ext}`;
-  else suggested = `${base}${plan.fmtKey === state.formatKey ? '_converted' : ''}${fmt.ext}`;
+  const suffixes = [];
+  if (state.tab === 'extract') suffixes.push(`clip_${fmtTime(state.inPoint, { ms: false }).replace(/:/g, '.')}-${fmtTime(state.outPoint, { ms: false }).replace(/:/g, '.')}`);
+  else if (state.tab === 'trim') suffixes.push('trimmed');
+  if (plan.only) suffixes.push('audio');
+  else if (!audioOut && state.audioTrack) suffixes.push('silent');
+  if (plan.resize != null) suffixes.push(`${plan.resize}p`);
+  if (!suffixes.length && plan.fmtKey === state.formatKey) suffixes.push('converted');
+  const suggested = [base, ...suffixes].join('_') + fmt.ext;
 
   // Get a destination first, while we still have the user's click.
   let sink;
@@ -607,10 +684,16 @@ async function runJob() {
   // Build the conversion.
   const video = {};
   const audio = {};
+  if (state.videoTrack && !videoOut) video.discard = true;
+  if (state.audioTrack && !audioOut) audio.discard = true;
   if (plan.video && plan.video.action === 'encode') {
     video.forceTranscode = true;
     video.codec = plan.video.codec;
     Object.assign(video, qualityOptions());
+    if (plan.resize != null) {
+      // Scale the short side; the other side follows the aspect ratio.
+      if (state.width >= state.height) video.height = plan.resize; else video.width = plan.resize;
+    }
   }
   if (plan.audio && plan.audio.action === 'encode') audio.codec = plan.audio.codec;
 
@@ -631,7 +714,8 @@ async function runJob() {
     conversion = await MB.Conversion.init({ input: state.input, output, trim, video, audio, copy, showWarnings: false });
     state.conversion = conversion;
 
-    const dropped = conversion.discardedTracks.filter((d) => d.track === state.videoTrack || d.track === state.audioTrack);
+    const dropped = conversion.discardedTracks.filter((d) =>
+      (d.track === state.videoTrack && videoOut) || (d.track === state.audioTrack && audioOut));
     if (dropped.length) {
       const why = dropped.map((d) => `${d.track.type} (${d.reason.replace(/_/g, ' ')})`).join(', ');
       throw new Error(`Cannot produce this output; the engine would drop: ${why}. ${everythingCopies ? 'Try Precise mode or a different format.' : ''}`);
@@ -712,7 +796,7 @@ function setRunning(on) {
   $('#btnGo').disabled = on || !state.plan || state.plan.errors.length > 0;
   $('#btnCancel').classList.toggle('hidden', !on);
   $('#openAnother').disabled = on;
-  $$('.tabs button, .options input, .options select, .options button, .panel input, .panel button').forEach((el) => { el.disabled = on; });
+  $$('.tabs button, .options input, .options select, .options button, .panel input, .panel button, #btnSnap').forEach((el) => { el.disabled = on; });
 }
 
 function setProgress(p) {
@@ -726,6 +810,97 @@ function setStatus(text, kind = '') {
   const el = $('#status');
   el.textContent = text;
   el.className = `status ${kind}`;
+}
+
+// ---------- Snapshot (save the current frame as PNG) ----------
+
+async function saveSnapshot() {
+  if (!state.videoTrack || state.running) return;
+  const t = currentTime();
+  const base = state.file.name.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_');
+  const suggested = `${base}_${fmtTime(t).replace(/:/g, '.')}.png`;
+
+  // Ask where to save first, while the click still counts as a user gesture.
+  let handle = null;
+  if (FSA) {
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: suggested, types: [{ description: 'PNG image', accept: { 'image/png': ['.png'] } }] });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      setStatus(`Could not open the output file: ${err.message || err}`, 'err');
+      return;
+    }
+  }
+
+  setStatus('Decoding frame…');
+  try {
+    let canvas = null;
+    if (await state.videoTrack.canDecode()) {
+      state.snapSink ??= new MB.CanvasSink(state.videoTrack, { poolSize: 1 });
+      const wrapped = await state.snapSink.getCanvas(t);
+      canvas = wrapped ? wrapped.canvas : null;
+    }
+    if (!canvas && state.previewMode === 'video') {
+      const v = $('#player');
+      if (v.videoWidth) {
+        canvas = document.createElement('canvas');
+        canvas.width = v.videoWidth; canvas.height = v.videoHeight;
+        canvas.getContext('2d').drawImage(v, 0, 0);
+      }
+    }
+    if (!canvas) throw new Error('could not decode a frame at this position.');
+    const blob = canvas.convertToBlob
+      ? await canvas.convertToBlob({ type: 'image/png' })
+      : await new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('could not encode PNG'))), 'image/png'));
+    if (handle) {
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = suggested;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+    setStatus(`Saved frame at ${fmtTime(t)} (${canvas.width}×${canvas.height}) → ${handle ? handle.name : suggested}`, 'ok');
+  } catch (err) {
+    console.error(err);
+    setStatus(`Snapshot failed: ${err.message || err}`, 'err');
+  }
+}
+
+// ---------- Remembered settings ----------
+
+const SETTINGS_KEY = 'ezvid.settings';
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (_) { return {}; }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      cutMode: cutMode(),
+      quality: $('#quality').value,
+      audioMode: audioMode(),
+      videoFormat: state.videoFormat,
+      audioFormat: state.audioFormat,
+      resolution: $('#resolution').value,
+    }));
+  } catch (_) { /* storage unavailable; nothing to do */ }
+}
+
+function restoreSettings() {
+  const s = loadSettings();
+  const setSelect = (id, v) => { const el = $(id); if (v != null && Array.from(el.options).some((o) => o.value === v)) el.value = v; };
+  setSelect('#audioMode', s.audioMode);
+  setSelect('#quality', s.quality);
+  if (s.cutMode === 'quick' || s.cutMode === 'precise') $(`input[name=cutMode][value=${s.cutMode}]`).checked = true;
+  if (VIDEO_FORMAT_KEYS.includes(s.videoFormat) || s.videoFormat === 'same') state.videoFormat = s.videoFormat;
+  if (AUDIO_FORMAT_KEYS.includes(s.audioFormat)) state.audioFormat = s.audioFormat;
+  if (s.resolution === 'keep' || RESOLUTIONS.includes(Number(s.resolution))) state.savedResolution = String(s.resolution);
+  applyFormatOptions();
 }
 
 // ---------- Wiring ----------
@@ -820,8 +995,17 @@ function wire() {
   });
 
   // Options
-  $$('input[name=cutMode]').forEach((r) => r.addEventListener('change', refreshPlan));
-  $('#outFormat').addEventListener('change', refreshPlan);
+  const onSetting = () => { saveSettings(); refreshPlan(); };
+  $$('input[name=cutMode]').forEach((r) => r.addEventListener('change', onSetting));
+  $('#quality').addEventListener('change', onSetting);
+  $('#resolution').addEventListener('change', () => { state.savedResolution = $('#resolution').value; onSetting(); });
+  $('#outFormat').addEventListener('change', () => {
+    if (audioMode() === 'only') state.audioFormat = $('#outFormat').value; else state.videoFormat = $('#outFormat').value;
+    onSetting();
+  });
+  $('#audioMode').addEventListener('change', () => { applyFormatOptions(); onSetting(); });
+  $('#btnSnap').addEventListener('click', saveSnapshot);
+  restoreSettings();
 
   // Action
   $('#btnGo').addEventListener('click', runJob);
@@ -870,7 +1054,6 @@ function selectTab(tab) {
   state.tab = tab;
   $$('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   $$('.panel').forEach((p) => p.classList.toggle('hidden', p.dataset.panel !== tab));
-  $('#cutModeBox').classList.toggle('hidden', tab === 'convert');
   updateTimeline();
   refreshPlan();
 }

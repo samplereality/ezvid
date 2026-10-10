@@ -163,3 +163,5 @@ label.radio span { font-size: 14px; }
 footer { max-width: 920px; margin: 0 auto; padding: 0 16px 32px; color: var(--muted); font-size: 12.5px; }
 footer p { margin: 0; }
 footer .credit { margin-top: 6px; }
+.tright { display: flex; align-items: center; gap: 12px; }
+.tright button { padding: 6px 10px; }

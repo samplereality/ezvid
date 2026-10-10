@@ -2,6 +2,18 @@
 
 All notable changes to ezvid are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com) and the project uses [Semantic Versioning](https://semver.org).
 
+## [0.2.0] - 2026-10-10
+
+### Added
+- Audio options: keep the audio, remove it (silent video), or save audio only as M4A (AAC) or WAV.
+- Snapshot button that saves the current frame as a full-resolution PNG.
+- Resolution choice (for example 1080p, 720p, 480p) when re-encoding in Precise mode or converting; picking one in Convert re-encodes the video.
+- Format, cut mode, quality, audio and resolution choices are remembered between visits.
+- Clearer message when the page is loaded over plain http, which hides the browser's encoders.
+
+### Changed
+- The −1s / +1s transport buttons became previous / next keyframe buttons; Shift+←/→ do the same.
+
 ## [0.1.0] - 2026-10-10
 
 Initial release.

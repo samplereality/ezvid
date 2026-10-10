@@ -58,7 +58,10 @@
         <button id="btnFwdFrame" type="button" title="Forward one frame (→)">+1f</button>
         <button id="btnNextKey" type="button" title="Next keyframe (Shift+→)">Keyframe ▶</button>
       </div>
-      <div class="timecode"><span id="timeNow">00:00.000</span> <span class="dim">/ <span id="timeTotal">00:00.000</span></span></div>
+      <div class="tright">
+        <button id="btnSnap" type="button" title="Save the current frame as a PNG image">Snapshot</button>
+        <div class="timecode"><span id="timeNow">00:00.000</span> <span class="dim">/ <span id="timeTotal">00:00.000</span></span></div>
+      </div>
     </div>
   </div>
 
@@ -118,6 +121,20 @@
           <option value="mkv">MKV</option>
           <option value="mov">MOV</option>
           <option value="webm">WebM</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="audioMode">Audio</label>
+        <select id="audioMode">
+          <option value="keep">Keep</option>
+          <option value="remove">Remove (silent video)</option>
+          <option value="only">Audio only (no video)</option>
+        </select>
+      </div>
+      <div class="row" id="resolutionRow">
+        <label for="resolution">Resolution</label>
+        <select id="resolution">
+          <option value="keep">Keep</option>
         </select>
       </div>
       <div class="row" id="qualityRow">

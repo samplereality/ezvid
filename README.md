@@ -1,6 +1,6 @@
 # ezvid
 
-Version 0.1.0 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
+Version 0.2.0 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
 
 Quick, private video cuts and conversions that run entirely in your browser. A lightweight replacement for the handful of things most people used Avidemux for:
 
@@ -8,6 +8,10 @@ Quick, private video cuts and conversions that run entirely in your browser. A l
 - **Trim** a chosen amount off the start of a video.
 - **Quick mode** cuts at keyframes with no re-encoding (instant, lossless). **Precise mode** cuts at the exact frame by re-encoding the video with your computer's hardware encoder.
 - **Convert** between containers (MP4, MKV, MOV, WebM), copying the video and audio streams untouched whenever the target container can hold them.
+- **Audio options:** remove the audio track, or save audio only as M4A or WAV.
+- **Downscale** to 1080p, 720p, 480p or 360p whenever the video is being re-encoded.
+- **Snapshot** the current frame as a PNG.
+- Settings are remembered between visits.
 
 Nothing is uploaded. The file is read straight from disk and the result is streamed straight back to disk, so multi‑gigabyte files are fine.
 
