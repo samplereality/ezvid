@@ -53,6 +53,10 @@ In Quick mode the start point snaps to the keyframe at or before your In point; 
 - `index.html`, `styles.css`, `app.js` — the app. The version number lives in `APP_VERSION` at the top of `app.js` and is shown in the page header.
 - `vendor/mediabunny.min.js` — the media engine, unmodified from the npm package (`dist/bundles/mediabunny.min.cjs`, 1.61.3). To update it, download a newer release and replace this file.
 
+## Deploying
+
+The site is published by GitHub Pages from the `main` branch (root folder); every push to `main` redeploys it within a minute or so. The custom domain comes from the `CNAME` file. DNS for it lives in cPanel at samplereality.com: a `CNAME` record for `ezvid` pointing to `samplereality.github.io`. After DNS resolves, turn on "Enforce HTTPS" in the repository's Pages settings once GitHub has issued the certificate.
+
 ## License
 
 MIT, see `LICENSE`. The vendored Mediabunny engine in `vendor/` is separately licensed under the Mozilla Public License 2.0 (`vendor/LICENSE-mediabunny.txt`); it is included unmodified.
