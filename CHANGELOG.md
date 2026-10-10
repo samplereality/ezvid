@@ -2,6 +2,14 @@
 
 All notable changes to ezvid are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com) and the project uses [Semantic Versioning](https://semver.org).
 
+## [0.3.0] - 2026-10-10
+
+### Added
+- **Cut out** tab: mark one or more sections to remove; everything else is kept and written as a single file. Removed ranges are drawn on the timeline. In Quick mode the video resumes at the keyframe before each cut's end and the list says exactly where; Precise mode is frame-accurate.
+- **Join** tab: append more files and save them as one. Quick mode joins files with the same codec, frame size and encoding settings without re-encoding; Precise mode re-encodes and accepts mixed files (letterboxing them into the first file's frame).
+- I / O and [ / ] keys work on the Cut out tab for the cut's start and end.
+- A new segment engine (`segments.js`) that writes several ranges, from one or more files, into one output with video and audio interleaved and progress and cancel support.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added

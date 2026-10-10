@@ -1,11 +1,13 @@
 # ezvid
 
-Version 0.2.0 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
+Version 0.3.0 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
 
 Quick, private video cuts and conversions that run entirely in your browser. A lightweight replacement for the handful of things most people used Avidemux for:
 
 - **Extract a clip** from a longer video (set In/Out points).
 - **Trim** a chosen amount off the start of a video.
+- **Cut out** one or more sections from the middle and keep the rest as a single file.
+- **Join** several files into one.
 - **Quick mode** cuts at keyframes with no re-encoding (instant, lossless). **Precise mode** cuts at the exact frame by re-encoding the video with your computer's hardware encoder.
 - **Convert** between containers (MP4, MKV, MOV, WebM), copying the video and audio streams untouched whenever the target container can hold them.
 - **Audio options:** remove the audio track, or save audio only as M4A or WAV.
@@ -49,12 +51,15 @@ What each mode does, in FFmpeg terms:
 | Precise extract | `ffmpeg -ss <in> -to <out> -i in.mp4 -c:v h264_videotoolbox -c:a copy clip.mp4` |
 | Trim start | same as above with no `-to` |
 | Convert | `ffmpeg -i in.mp4 -c copy out.mkv` |
+| Cut out / Join | the segment muxer (`-f concat` with `-c copy`, or a `concat` filter when re-encoding) |
 
 In Quick mode the start point snaps to the keyframe at or before your In point; the page tells you exactly where that is and offers one‑click snapping to the previous or next keyframe. The Out point is exact to the nearest packet in both modes. Precise mode re-encodes the whole clip (not just the first group of pictures), matching the source bitrate by default.
 
+For Cut out and Join, each kept piece begins at a keyframe in Quick mode and ends at the last frame that can be decoded without frames past the cut, so a couple of B-frames just before a cut may be dropped (the previous frame holds for a fraction of a second). Audio is cut at packet boundaries (about 20 ms). Precise mode avoids both by re-encoding the video.
+
 ## Files
 
-- `index.html`, `styles.css`, `app.js` — the app. The version number lives in `APP_VERSION` at the top of `app.js` and is shown in the page header.
+- `index.html`, `styles.css`, `app.js` — the app; `segments.js` — the multi-range engine behind Cut out and Join. The version number lives in `APP_VERSION` at the top of `app.js` and is shown in the page header.
 - `vendor/mediabunny.min.js` — the media engine, unmodified from the npm package (`dist/bundles/mediabunny.min.cjs`, 1.61.3). To update it, download a newer release and replace this file.
 
 ## Deploying

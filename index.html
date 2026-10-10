@@ -46,6 +46,7 @@
     <div class="timeline" id="timeline">
       <div class="tl-track"></div>
       <div class="tl-range" id="tlRange"></div>
+      <div class="tl-cuts" id="tlCuts"></div>
       <div class="tl-mark tl-in" id="tlIn" title="In point"></div>
       <div class="tl-mark tl-out" id="tlOut" title="Out point"></div>
       <input id="scrub" type="range" min="0" max="1000" step="any" value="0" aria-label="Playhead">
@@ -68,6 +69,8 @@
   <nav class="tabs" role="tablist">
     <button type="button" role="tab" data-tab="extract" aria-selected="true">Extract clip</button>
     <button type="button" role="tab" data-tab="trim">Trim start</button>
+    <button type="button" role="tab" data-tab="cutout">Cut out</button>
+    <button type="button" role="tab" data-tab="join">Join</button>
     <button type="button" role="tab" data-tab="convert">Convert</button>
   </nav>
 
@@ -95,6 +98,34 @@
       <button type="button" class="small ghost" data-go="trim">Go</button>
     </div>
     <p class="hint" id="trimSummary"></p>
+  </section>
+
+  <section class="panel hidden" data-panel="cutout">
+    <div class="row">
+      <label for="cutFrom">Remove from</label>
+      <input id="cutFrom" class="time" type="text" inputmode="decimal" spellcheck="false" value="00:00.000">
+      <button type="button" class="small" data-set="cutFrom" title="Use the playhead position">Set to playhead</button>
+      <button type="button" class="small ghost" data-go="cutFrom">Go</button>
+    </div>
+    <div class="row">
+      <label for="cutTo">to</label>
+      <input id="cutTo" class="time" type="text" inputmode="decimal" spellcheck="false" value="00:00.000">
+      <button type="button" class="small" data-set="cutTo" title="Use the playhead position">Set to playhead</button>
+      <button type="button" class="small ghost" data-go="cutTo">Go</button>
+      <button type="button" class="small primary" id="btnAddCut">Add cut</button>
+    </div>
+    <ul id="cutList" class="itemlist"></ul>
+    <p class="hint" id="cutSummary">Mark a section to remove and click Add cut. Everything else is kept and joined into one file.</p>
+  </section>
+
+  <section class="panel hidden" data-panel="join">
+    <p class="hint">Files are joined in this order, starting with the file loaded above. Quick mode needs the same codec and frame size in every file; Precise mode re-encodes and accepts anything.</p>
+    <ol id="joinList" class="itemlist"></ol>
+    <div class="row">
+      <button type="button" class="small" id="btnAddFiles">Add files…</button>
+      <input id="joinInput" type="file" multiple accept="video/*,audio/*,.mp4,.m4v,.mov,.mkv,.webm,.ts,.m2ts,.mts" hidden>
+    </div>
+    <p class="hint" id="joinSummary"></p>
   </section>
 
   <section class="panel hidden" data-panel="convert">
@@ -168,6 +199,7 @@
 </main>
 
 <script src="vendor/mediabunny.min.js"></script>
+<script src="segments.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -165,3 +165,14 @@ footer p { margin: 0; }
 footer .credit { margin-top: 6px; }
 .tright { display: flex; align-items: center; gap: 12px; }
 .tright button { padding: 6px 10px; }
+
+.tl-cuts { position: absolute; left: 0; right: 0; top: 11px; height: 12px; pointer-events: none; }
+.tl-cut { position: absolute; top: 0; height: 100%; background: repeating-linear-gradient(45deg, rgba(220,38,38,.55) 0 4px, rgba(220,38,38,.25) 4px 8px); border-radius: 3px; }
+.itemlist { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.itemlist li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 14px; }
+.itemlist .mono { font-family: var(--mono); font-size: 13px; }
+.itemlist .grow { flex: 1 1 auto; }
+.itemlist .sub { color: var(--muted); font-size: 12.5px; flex-basis: 100%; }
+.itemlist .sub.warn { color: var(--warn); }
+.itemlist button { padding: 3px 8px; font-size: 13px; }
+button.small.primary { padding: 5px 12px; }

@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const APP_VERSION = '0.2.0'; // Semantic Versioning: MAJOR.MINOR.PATCH
+const APP_VERSION = '0.3.0'; // Semantic Versioning: MAJOR.MINOR.PATCH
 
 const MB = window.Mediabunny;
 const $ = (sel) => document.querySelector(sel);
@@ -49,6 +49,9 @@ const state = {
   audioCodec: null,
   width: 0,
   height: 0,
+  codedW: 0,
+  codedH: 0,
+  desc: '',             // codec + decoder description, used to tell whether files can be joined without re-encoding
   fps: 0,
   bitrate: 0,           // sampled average video bitrate (bits/s)
   channels: 0,
@@ -64,6 +67,11 @@ const state = {
   inPoint: 0,
   outPoint: 0,
   trimAmount: 0,
+  cutFrom: 0,
+  cutTo: 0,
+  cuts: [],             // ranges to remove (Cut out tab): [{ from, to }], sorted and non-overlapping
+  extra: [],            // additional files (Join tab), each a probeFile() entry
+  segJob: null,         // { signal, output } while a segment job runs
   keyframe: { prev: null, next: null, for: null }, // keyframes around the active start point
   plan: null,
   conversion: null,
@@ -154,43 +162,17 @@ async function loadFile(file) {
   state.file = file;
   setStatus('Reading file…');
 
-  let input;
+  let e;
   try {
-    input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(file) });
-    if (!(await input.canRead())) throw new Error('Unrecognized container format.');
-    state.input = input;
-    const format = await input.getFormat();
-    state.formatName = format.name;
-    state.formatKey = formatKeyFromMime(format.mimeType);
-    state.duration = await input.computeDuration();
-    state.firstTs = await input.getFirstTimestamp();
-
-    state.videoTrack = await input.getPrimaryVideoTrack();
-    state.audioTrack = await input.getPrimaryAudioTrack();
-
-    if (state.videoTrack) {
-      const vt = state.videoTrack;
-      state.videoCodec = await vt.getCodec();
-      state.width = await vt.getDisplayWidth();
-      state.height = await vt.getDisplayHeight();
-      const stats = await vt.computePacketStats(1500);
-      state.fps = stats.averagePacketRate || 0;
-      state.bitrate = stats.averageBitrate || 0;
-      state.packetSink = new MB.EncodedPacketSink(vt);
-    }
-    if (state.audioTrack) {
-      const at = state.audioTrack;
-      state.audioCodec = await at.getCodec();
-      state.channels = await at.getNumberOfChannels();
-      state.sampleRate = await at.getSampleRate();
-    }
+    e = await probeFile(file);
   } catch (err) {
     console.error(err);
     setStatus(`Could not read this file: ${err.message || err}`, 'err');
-    try { input?.dispose?.(); } catch (_) {}
-    state.input = null;
     return;
   }
+  const { file: _f, ...fields } = e;
+  Object.assign(state, fields);
+  state.packetSink = state.videoTrack ? new MB.EncodedPacketSink(state.videoTrack) : null;
 
   state.inPoint = 0;
   state.outPoint = state.duration;
@@ -210,7 +192,60 @@ async function loadFile(file) {
   await setupPreview(file);
   syncTimeInputs();
   updateTimeline();
+  renderJoin();
   refreshPlan();
+}
+
+// Opens a file with the media engine and gathers what the UI needs to know about it.
+async function probeFile(file) {
+  const input = new MB.Input({ formats: MB.ALL_FORMATS, source: new MB.BlobSource(file) });
+  try {
+    if (!(await input.canRead())) throw new Error('Unrecognized container format.');
+    const format = await input.getFormat();
+    const e = {
+      file, input,
+      formatName: format.name,
+      formatKey: formatKeyFromMime(format.mimeType),
+      duration: await input.computeDuration(),
+      firstTs: await input.getFirstTimestamp(),
+      videoTrack: await input.getPrimaryVideoTrack(),
+      audioTrack: await input.getPrimaryAudioTrack(),
+      videoCodec: null, width: 0, height: 0, codedW: 0, codedH: 0, desc: '', fps: 0, bitrate: 0,
+      audioCodec: null, channels: 0, sampleRate: 0,
+    };
+    if (e.videoTrack) {
+      const vt = e.videoTrack;
+      e.videoCodec = await vt.getCodec();
+      e.width = await vt.getDisplayWidth();
+      e.height = await vt.getDisplayHeight();
+      e.codedW = await vt.getCodedWidth();
+      e.codedH = await vt.getCodedHeight();
+      e.desc = decoderKey(await vt.getDecoderConfig());
+      const stats = await vt.computePacketStats(1500);
+      e.fps = stats.averagePacketRate || 0;
+      e.bitrate = stats.averageBitrate || 0;
+    }
+    if (e.audioTrack) {
+      const at = e.audioTrack;
+      e.audioCodec = await at.getCodec();
+      e.channels = await at.getNumberOfChannels();
+      e.sampleRate = await at.getSampleRate();
+    }
+    return e;
+  } catch (err) {
+    try { input.dispose?.(); } catch (_) { /* ignore */ }
+    throw err;
+  }
+}
+
+function decoderKey(dc) {
+  if (!dc) return '';
+  let d = '';
+  if (dc.description) {
+    const u = dc.description instanceof ArrayBuffer ? new Uint8Array(dc.description) : new Uint8Array(dc.description.buffer, dc.description.byteOffset, dc.description.byteLength);
+    d = Array.from(u, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return `${dc.codec}|${d}`;
 }
 
 function formatKeyFromMime(mime) {
@@ -232,12 +267,17 @@ async function resetState() {
   player.removeAttribute('src');
   player.load();
   try { state.input?.dispose?.(); } catch (_) {}
+  for (const e of state.extra) { try { e.input?.dispose?.(); } catch (_) { /* ignore */ } }
   Object.assign(state, {
     file: null, input: null, duration: 0, firstTs: 0, formatKey: null, formatName: '',
     videoTrack: null, audioTrack: null, videoCodec: null, audioCodec: null, width: 0, height: 0, fps: 0, bitrate: 0,
     channels: 0, sampleRate: 0, packetSink: null, canvasSink: null, snapSink: null, previewMode: 'video',
-    inPoint: 0, outPoint: 0, trimAmount: 0, keyframe: { prev: null, next: null, for: null }, plan: null, conversion: null, running: false,
+    codedW: 0, codedH: 0, desc: '',
+    inPoint: 0, outPoint: 0, trimAmount: 0, cutFrom: 0, cutTo: 0, cuts: [], extra: [], segJob: null,
+    keyframe: { prev: null, next: null, for: null }, plan: null, conversion: null, running: false,
   });
+  $('#cutList').innerHTML = '';
+  $('#joinList').innerHTML = '';
   $('#frameCanvas').classList.add('hidden');
   player.classList.remove('hidden');
   const playBtn = $('#btnPlay');
@@ -409,25 +449,37 @@ function togglePlay() {
 
 function updateTimeline() {
   const d = state.duration || 1;
+  const tab = state.tab;
   const tlIn = $('#tlIn'), tlOut = $('#tlOut'), tlRange = $('#tlRange');
-  let a, b;
-  if (state.tab === 'extract') { a = state.inPoint; b = state.outPoint; }
-  else if (state.tab === 'trim') { a = state.trimAmount; b = state.duration; }
-  else { a = 0; b = state.duration; }
+  let a = 0, b = state.duration;
+  if (tab === 'extract') { a = state.inPoint; b = state.outPoint; }
+  else if (tab === 'trim') { a = state.trimAmount; }
   const pa = clamp(a / d, 0, 1) * 100, pb = clamp(b / d, 0, 1) * 100;
   tlIn.style.left = `${pa}%`;
   tlOut.style.left = `${pb}%`;
   tlRange.style.left = `${pa}%`;
   tlRange.style.width = `${Math.max(0, pb - pa)}%`;
-  const show = state.tab !== 'convert';
-  tlIn.classList.toggle('hidden', !show);
-  tlOut.classList.toggle('hidden', !show || state.tab === 'trim');
+  tlIn.classList.toggle('hidden', !(tab === 'extract' || tab === 'trim'));
+  tlOut.classList.toggle('hidden', tab !== 'extract');
+  const cuts = $('#tlCuts');
+  cuts.innerHTML = '';
+  if (tab === 'cutout') {
+    for (const c of state.cuts) {
+      const el = document.createElement('div');
+      el.className = 'tl-cut';
+      el.style.left = `${clamp(c.from / d, 0, 1) * 100}%`;
+      el.style.width = `${clamp((c.to - c.from) / d, 0, 1) * 100}%`;
+      cuts.appendChild(el);
+    }
+  }
 }
 
 function syncTimeInputs() {
   $('#inTime').value = fmtTime(state.inPoint);
   $('#outTime').value = fmtTime(state.outPoint);
   $('#trimTime').value = fmtTime(state.trimAmount);
+  $('#cutFrom').value = fmtTime(state.cutFrom);
+  $('#cutTo').value = fmtTime(state.cutTo);
   const len = state.outPoint - state.inPoint;
   $('#clipLength').textContent = len > 0 ? `Clip length: ${fmtTime(len)}` : 'Out must be after In.';
   const keep = state.duration - state.trimAmount;
@@ -442,7 +494,8 @@ let kfToken = 0;
 async function refreshKeyframeInfo() {
   const info = $('#keyframeInfo');
   const quick = cutMode() === 'quick';
-  if (state.tab === 'convert' || !quick || !hasVideoOut()) { info.innerHTML = ''; return; }
+  if (state.tab !== 'extract' && state.tab !== 'trim') { info.innerHTML = ''; return; }
+  if (!quick || !hasVideoOut()) { info.innerHTML = ''; return; }
   if (!state.packetSink) { info.innerHTML = ''; return; }
   const start = activeStart();
   const token = ++kfToken;
@@ -484,6 +537,136 @@ function setActiveStart(t) {
 }
 
 function cutMode() { return $('input[name=cutMode]:checked').value; }
+
+// ---------- Cut out: list of removed ranges ----------
+
+function addCut() {
+  const from = state.cutFrom, to = state.cutTo;
+  if (!(to > from)) { setStatus('The cut needs an end later than its start.', 'err'); return; }
+  state.cuts.push({ from, to });
+  normalizeCuts();
+  setStatus('');
+  updateTimeline();
+  refreshPlan();
+}
+
+function normalizeCuts() {
+  const d = state.duration;
+  const cs = state.cuts
+    .map((c) => ({ from: clamp(c.from, 0, d), to: clamp(c.to, 0, d) }))
+    .filter((c) => c.to > c.from)
+    .sort((a, b) => a.from - b.from);
+  const merged = [];
+  for (const c of cs) {
+    const last = merged[merged.length - 1];
+    if (last && c.from <= last.to) last.to = Math.max(last.to, c.to);
+    else merged.push({ ...c });
+  }
+  state.cuts = merged;
+}
+
+// The pieces that remain once the cuts are removed, over [0, duration].
+function keptSegments() {
+  const segs = [];
+  let pos = 0;
+  for (const c of state.cuts) {
+    if (c.from > pos) segs.push({ start: pos, end: c.from });
+    pos = Math.max(pos, c.to);
+  }
+  if (state.duration > pos) segs.push({ start: pos, end: state.duration });
+  return segs;
+}
+
+let cutsToken = 0;
+async function renderCuts() {
+  const ul = $('#cutList');
+  ul.innerHTML = '';
+  const token = ++cutsToken;
+  state.cuts.forEach((c, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="mono">${fmtTime(c.from)} → ${fmtTime(c.to)}</span><span class="dim">(${fmtTime(c.to - c.from)})</span><span class="grow"></span>`
+      + `<button type="button" data-cut-go="${i}" title="Jump to the start of this cut">Go</button>`
+      + `<button type="button" data-cut-del="${i}" title="Remove this cut from the list">×</button>`
+      + `<span class="sub" data-cut-sub="${i}"></span>`;
+    ul.appendChild(li);
+  });
+  const el = $('#cutSummary');
+  if (!state.cuts.length) {
+    el.textContent = 'Mark a section to remove and click Add cut. Everything else is kept and joined into one file.';
+  } else {
+    const removed = state.cuts.reduce((a, c) => a + (c.to - c.from), 0);
+    el.textContent = `Removes ${state.cuts.length} section${state.cuts.length > 1 ? 's' : ''} (${fmtTime(removed)}); the result will be about ${fmtTime(state.duration - removed)} long.`;
+  }
+  // In Quick mode the video after each cut resumes at a keyframe; say where.
+  if (!(hasVideoOut() && cutMode() === 'quick' && state.videoTrack)) return;
+  for (let i = 0; i < state.cuts.length; i++) {
+    const c = state.cuts[i];
+    let kf;
+    try { kf = await window.EzSegments.keyframeBefore(state.videoTrack, c.to); } catch (_) { continue; }
+    if (token !== cutsToken) return;
+    const sub = ul.querySelector(`[data-cut-sub="${i}"]`);
+    if (!sub) continue;
+    if (c.to >= state.duration - 1e-6) sub.textContent = '';
+    else if (kf <= c.from + 1e-6) { sub.textContent = 'Quick mode: no keyframe inside this cut, so nothing would be removed. Make it longer or use Precise mode.'; sub.classList.add('warn'); }
+    else if (c.to - kf > 0.0005) sub.textContent = `Quick mode: video resumes at keyframe ${fmtTime(kf)}, so ${fmtTime(c.to - kf)} less is removed.`;
+    else sub.textContent = '';
+  }
+}
+
+// ---------- Join: ordered list of files ----------
+
+function joinEntries() {
+  const main = {
+    file: state.file, input: state.input, duration: state.duration, firstTs: state.firstTs,
+    videoTrack: state.videoTrack, audioTrack: state.audioTrack, videoCodec: state.videoCodec, width: state.width, height: state.height,
+    codedW: state.codedW, codedH: state.codedH, desc: state.desc, audioCodec: state.audioCodec, channels: state.channels, sampleRate: state.sampleRate,
+  };
+  return [main, ...state.extra];
+}
+
+async function addExtraFiles(files) {
+  if (!state.input || state.running) return;
+  for (const f of files) {
+    setStatus(`Reading ${f.name}…`);
+    try { state.extra.push(await probeFile(f)); }
+    catch (err) { console.error(err); setStatus(`Could not read ${f.name}: ${err.message || err}`, 'err'); continue; }
+    setStatus('');
+  }
+  renderJoin();
+  refreshPlan();
+}
+
+function renderJoin() {
+  const ol = $('#joinList');
+  ol.innerHTML = '';
+  if (!state.input) return;
+  const entries = joinEntries();
+  entries.forEach((e, i) => {
+    const li = document.createElement('li');
+    const v = e.videoTrack ? `${codecName(e.videoCodec)} ${e.width}×${e.height}` : 'no video';
+    const a = e.audioTrack ? `${codecName(e.audioCodec)} ${e.channels}ch` : 'no audio';
+    li.innerHTML = `<span class="mono dim">${i + 1}.</span><span class="grow"><b>${escapeHtml(e.file.name)}</b> <span class="dim">· ${fmtTime(e.duration)} · ${v} · ${a}</span></span>`
+      + (i === 0 ? '<span class="dim">loaded above</span>'
+        : `<button type="button" data-join-up="${i}" title="Move up"${i === 1 ? ' disabled' : ''}>▲</button>`
+          + `<button type="button" data-join-down="${i}" title="Move down"${i === entries.length - 1 ? ' disabled' : ''}>▼</button>`
+          + `<button type="button" data-join-del="${i}" title="Remove from the list">×</button>`);
+    ol.appendChild(li);
+  });
+  const total = entries.reduce((sum, e) => sum + e.duration, 0);
+  $('#joinSummary').textContent = entries.length < 2 ? 'Add at least one more file.' : `${entries.length} files, ${fmtTime(total)} in total.`;
+}
+
+function joinCompat(entries) {
+  const f = entries[0];
+  const problems = [];
+  for (const e of entries.slice(1)) {
+    if (!!e.videoTrack !== !!f.videoTrack) problems.push(`${e.file.name} ${e.videoTrack ? 'has' : 'has no'} video track, unlike the first file.`);
+    if (!!e.audioTrack !== !!f.audioTrack) problems.push(`${e.file.name} ${e.audioTrack ? 'has' : 'has no'} audio track, unlike the first file.`);
+  }
+  const videoSame = entries.every((e) => e.videoCodec === f.videoCodec && e.codedW === f.codedW && e.codedH === f.codedH && e.desc === f.desc);
+  const audioSame = entries.every((e) => e.audioCodec === f.audioCodec && e.channels === f.channels && e.sampleRate === f.sampleRate);
+  return { problems, videoSame, audioSame };
+}
 
 // ---------- Plan (what will be copied vs re-encoded) ----------
 
@@ -546,6 +729,7 @@ async function refreshPlan() {
   const plan = { fmtKey, fmt, video: null, audio: null, errors: [], precise, resize, only };
 
   $('#cutModeBox').classList.toggle('hidden', state.tab === 'convert' || !videoOut);
+  if (state.tab === 'cutout') renderCuts();
   $('#resolutionRow').classList.toggle('hidden', !(resizable && $('#resolution').options.length > 1));
 
   // Video
@@ -581,10 +765,13 @@ async function refreshPlan() {
   }
 
   // Audio
+  const segTab = state.tab === 'cutout' || state.tab === 'join';
+  const compat = state.tab === 'join' ? joinCompat(joinEntries()) : null;
   if (audioOut) {
     const supported = of.getSupportedAudioCodecs();
     const canHold = state.audioCodec != null && supported.includes(state.audioCodec);
-    if (canHold) {
+    const mustEncode = compat ? !compat.audioSame : false;
+    if (canHold && !mustEncode) {
       plan.audio = { action: 'copy' };
     } else {
       const aOpts = { numberOfChannels: state.channels, sampleRate: state.sampleRate };
@@ -592,8 +779,23 @@ async function refreshPlan() {
       let codec = null;
       try { codec = await MB.getFirstEncodableAudioCodec(candidates, aOpts); } catch (_) { codec = null; }
       if (!codec) plan.errors.push(`This browser cannot encode any audio codec that ${fmt.label} supports.`);
-      else plan.audio = { action: 'encode', codec, reason: `${fmt.label} cannot hold ${codecName(state.audioCodec)}` };
+      else plan.audio = { action: 'encode', codec, reason: mustEncode ? 'the files differ in audio format' : `${fmt.label} cannot hold ${codecName(state.audioCodec)}` };
     }
+  }
+
+  // Segment tabs
+  if (state.tab === 'cutout') {
+    if (!state.cuts.length) plan.errors.push('Add at least one cut.');
+    else if (!keptSegments().length) plan.errors.push('The cuts remove the whole video.');
+  }
+  if (state.tab === 'join') {
+    const entries = joinEntries();
+    if (entries.length < 2) plan.errors.push('Add at least one more file to join.');
+    plan.errors.push(...compat.problems);
+    if (videoOut && !precise && !compat.videoSame && entries.length >= 2) plan.errors.push('The files differ in video codec, size or encoding settings, so Quick mode cannot join them. Switch to Precise mode.');
+  }
+  if (segTab && plan.video && plan.video.action === 'encode' && plan.video.reason.includes('frame-accurate cut') && state.tab === 'join') {
+    plan.video.reason = plan.video.reason.replace('frame-accurate cut', 'Precise join');
   }
 
   if (!state.videoTrack && !state.audioTrack) plan.errors.push('No video or audio track was found in this file.');
@@ -622,7 +824,11 @@ async function refreshPlan() {
   $('#qualityRow').classList.toggle('hidden', !(plan.video && plan.video.action === 'encode'));
   go.disabled = plan.errors.length > 0 || state.running;
   const what = only ? 'audio' : state.tab === 'extract' ? 'clip' : 'video';
-  go.textContent = state.tab === 'extract' ? `Save ${what}…` : state.tab === 'trim' ? `Save trimmed ${what}…` : `Save as ${fmt.label.split(' ')[0]}…`;
+  go.textContent = state.tab === 'extract' ? `Save ${what}…`
+    : state.tab === 'trim' ? `Save trimmed ${what}…`
+    : state.tab === 'cutout' ? `Save edited ${what}…`
+    : state.tab === 'join' ? `Save joined ${what}…`
+    : `Save as ${fmt.label.split(' ')[0]}…`;
 }
 
 function escapeUnlessMarkup(s) { return s.startsWith('<span') ? s : escapeHtml(s); }
@@ -663,6 +869,8 @@ async function runJob() {
   const suffixes = [];
   if (state.tab === 'extract') suffixes.push(`clip_${fmtTime(state.inPoint, { ms: false }).replace(/:/g, '.')}-${fmtTime(state.outPoint, { ms: false }).replace(/:/g, '.')}`);
   else if (state.tab === 'trim') suffixes.push('trimmed');
+  else if (state.tab === 'cutout') suffixes.push('cut');
+  else if (state.tab === 'join') suffixes.push('joined');
   if (plan.only) suffixes.push('audio');
   else if (!audioOut && state.audioTrack) suffixes.push('silent');
   if (plan.resize != null) suffixes.push(`${plan.resize}p`);
@@ -680,6 +888,11 @@ async function runJob() {
     return;
   }
   if (!sink) return;
+
+  if (state.tab === 'cutout' || state.tab === 'join') {
+    await runSegmentJob(plan, sink, fmt, videoOut, audioOut);
+    return;
+  }
 
   // Build the conversion.
   const video = {};
@@ -748,6 +961,61 @@ async function runJob() {
     setProgress(null);
   } finally {
     state.conversion = null;
+    setRunning(false);
+  }
+}
+
+// Cut out / Join: drive the segment engine (segments.js) instead of a single Conversion.
+async function runSegmentJob(plan, sink, fmt, videoOut, audioOut) {
+  let segments;
+  if (state.tab === 'join') {
+    segments = joinEntries().map((e) => ({ input: e.input, videoTrack: e.videoTrack, audioTrack: e.audioTrack, start: Math.max(0, e.firstTs), end: e.duration }));
+  } else {
+    segments = keptSegments().map((sg) => ({ input: state.input, videoTrack: state.videoTrack, audioTrack: state.audioTrack, start: sg.start, end: sg.end }));
+  }
+  const videoEncoding = plan.video && plan.video.action === 'encode'
+    ? { codec: plan.video.codec, ...qualityOptions(), ...(plan.resize != null ? { transform: state.width >= state.height ? { height: plan.resize } : { width: plan.resize } } : {}) }
+    : null;
+  const audioEncoding = plan.audio && plan.audio.action === 'encode' ? { codec: plan.audio.codec, quality: new MB.Quality('high') } : null;
+
+  const output = new MB.Output({ format: fmt.make(), target: sink.target });
+  const signal = { cancelled: false };
+  state.segJob = { signal, output };
+  setRunning(true);
+  setStatus('Preparing…');
+  setProgress(0);
+  const t0 = performance.now();
+  const total = segments.reduce((a, sg) => a + Math.max(0, sg.end - sg.start), 0);
+  try {
+    const res = await window.EzSegments.run(segments, {
+      output, videoOut, audioOut,
+      videoMode: videoEncoding ? 'encode' : 'copy', videoEncoding,
+      audioMode: audioEncoding ? 'encode' : 'copy', audioEncoding,
+      signal,
+      onProgress: (p, processed) => {
+        setProgress(p);
+        const elapsed = (performance.now() - t0) / 1000;
+        const speed = elapsed > 0.5 && processed > 0 ? ` · ${(processed / elapsed).toFixed(1)}× realtime` : '';
+        const eta = p > 0.02 && p < 1 ? ` · about ${fmtTime((elapsed / p) * (1 - p), { ms: false })} left` : '';
+        setStatus(`${Math.round(p * 100)}% · ${fmtTime(processed, { ms: false })} of ${fmtTime(total, { ms: false })}${speed}${eta}`);
+      },
+    });
+    await sink.finish();
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    setProgress(1);
+    setStatus(`Done in ${secs} s → ${sink.name} (${fmtTime(res.duration)} long)`, 'ok');
+  } catch (err) {
+    if (signal.cancelled || (err && err.name === 'SegmentsCanceledError')) {
+      setStatus('Cancelled. A partial output file may have been left behind.', '');
+    } else {
+      console.error(err);
+      setStatus(`Failed: ${err.message || err}`, 'err');
+    }
+    try { await output.cancel(); } catch (_) { /* ignore */ }
+    try { await sink.abort(); } catch (_) { /* ignore */ }
+    setProgress(null);
+  } finally {
+    state.segJob = null;
     setRunning(false);
   }
 }
@@ -972,18 +1240,38 @@ function wire() {
   bindTime('#inTime', (t) => { state.inPoint = t; });
   bindTime('#outTime', (t) => { state.outPoint = t; });
   bindTime('#trimTime', (t) => { state.trimAmount = t; });
+  bindTime('#cutFrom', (t) => { state.cutFrom = t; });
+  bindTime('#cutTo', (t) => { state.cutTo = t; });
 
+  const POINTS = { in: 'inPoint', out: 'outPoint', trim: 'trimAmount', cutFrom: 'cutFrom', cutTo: 'cutTo' };
   $$('[data-set]').forEach((b) => b.addEventListener('click', () => {
-    const t = currentTime();
-    if (b.dataset.set === 'in') state.inPoint = t;
-    else if (b.dataset.set === 'out') state.outPoint = t;
-    else state.trimAmount = t;
+    state[POINTS[b.dataset.set]] = currentTime();
     syncTimeInputs(); updateTimeline(); refreshPlan();
   }));
-  $$('[data-go]').forEach((b) => b.addEventListener('click', () => {
-    const k = b.dataset.go;
-    seekTo(k === 'in' ? state.inPoint : k === 'out' ? state.outPoint : state.trimAmount);
-  }));
+  $$('[data-go]').forEach((b) => b.addEventListener('click', () => seekTo(state[POINTS[b.dataset.go]])));
+
+  // Cut out
+  $('#btnAddCut').addEventListener('click', addCut);
+  $('#cutList').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || state.running) return;
+    if (b.dataset.cutGo != null) seekTo(state.cuts[Number(b.dataset.cutGo)].from);
+    if (b.dataset.cutDel != null) { state.cuts.splice(Number(b.dataset.cutDel), 1); updateTimeline(); refreshPlan(); }
+  });
+
+  // Join
+  const joinInput = $('#joinInput');
+  $('#btnAddFiles').addEventListener('click', () => joinInput.click());
+  joinInput.addEventListener('change', () => { addExtraFiles(Array.from(joinInput.files)); joinInput.value = ''; });
+  $('#joinList').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || state.running) return;
+    const i = Number(b.dataset.joinUp ?? b.dataset.joinDown ?? b.dataset.joinDel) - 1; // index into state.extra
+    if (b.dataset.joinDel != null) { try { state.extra[i].input?.dispose?.(); } catch (_) { /* ignore */ } state.extra.splice(i, 1); }
+    else if (b.dataset.joinUp != null && i > 0) { [state.extra[i - 1], state.extra[i]] = [state.extra[i], state.extra[i - 1]]; }
+    else if (b.dataset.joinDown != null && i < state.extra.length - 1) { [state.extra[i + 1], state.extra[i]] = [state.extra[i], state.extra[i + 1]]; }
+    renderJoin(); refreshPlan();
+  });
 
   // Keyframe snap buttons (rendered dynamically)
   $('#keyframeInfo').addEventListener('click', (e) => {
@@ -1011,7 +1299,10 @@ function wire() {
   $('#btnGo').addEventListener('click', runJob);
   $('#btnCancel').addEventListener('click', async () => {
     $('#btnCancel').disabled = true;
-    try { await state.conversion?.cancel(); } finally { $('#btnCancel').disabled = false; }
+    try {
+      if (state.segJob) state.segJob.signal.cancelled = true;
+      else await state.conversion?.cancel();
+    } finally { $('#btnCancel').disabled = false; }
   });
 
   // Keyboard
@@ -1028,8 +1319,8 @@ function wire() {
       case 'End': e.preventDefault(); seekTo(state.duration); break;
       case 'i': case 'I': setPoint('in'); break;
       case 'o': case 'O': setPoint('out'); break;
-      case '[': seekTo(state.tab === 'trim' ? state.trimAmount : state.inPoint); break;
-      case ']': seekTo(state.outPoint); break;
+      case '[': seekTo(state.tab === 'trim' ? state.trimAmount : state.tab === 'cutout' ? state.cutFrom : state.inPoint); break;
+      case ']': seekTo(state.tab === 'cutout' ? state.cutTo : state.outPoint); break;
       default: return;
     }
   });
@@ -1041,6 +1332,7 @@ function wire() {
 function setPoint(which) {
   const t = currentTime();
   if (state.tab === 'trim') { if (which === 'in') state.trimAmount = t; }
+  else if (state.tab === 'cutout') { if (which === 'in') state.cutFrom = t; else state.cutTo = t; }
   else if (which === 'in') state.inPoint = t; else state.outPoint = t;
   syncTimeInputs(); updateTimeline(); refreshPlan();
 }
