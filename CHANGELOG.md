@@ -2,6 +2,12 @@
 
 All notable changes to ezvid are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com) and the project uses [Semantic Versioning](https://semver.org).
 
+## [0.3.1] - 2026-10-11
+
+### Fixed
+- The next-keyframe button (and Shift+→) did nothing when the playhead was already on a keyframe, because the player reports a time a fraction of a millisecond before the frame's true timestamp. Keyframe jumps now tolerate half a frame in either direction.
+- For the same reason, "Set to playhead" and the I/O keys now use the exact keyframe timestamp when the playhead is within half a frame of one, so a Quick cut no longer snaps back to the previous keyframe.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added

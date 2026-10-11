@@ -1,6 +1,6 @@
 # ezvid
 
-Version 0.3.0 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
+Version 0.3.1 · follows [Semantic Versioning](https://semver.org); see `CHANGELOG.md`.
 
 Quick, private video cuts and conversions that run entirely in your browser. A lightweight replacement for the handful of things most people used Avidemux for:
 

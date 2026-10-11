@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const APP_VERSION = '0.3.0'; // Semantic Versioning: MAJOR.MINOR.PATCH
+const APP_VERSION = '0.3.1'; // Semantic Versioning: MAJOR.MINOR.PATCH
 
 const MB = window.Mediabunny;
 const $ = (sel) => document.querySelector(sel);
@@ -412,6 +412,19 @@ function seekTo(t, { fromScrub = false } = {}) {
 
 function frameStep() { return state.fps > 0 ? 1 / state.fps : 1 / 30; }
 
+// The playhead time to use when setting a point. If a keyframe lies within half a frame of the playhead, return
+// its exact timestamp so Quick mode treats the point as being on that keyframe rather than a hair before it.
+async function playheadPoint() {
+  const now = currentTime();
+  if (!state.packetSink) return now;
+  const half = frameStep() / 2;
+  try {
+    const p = await state.packetSink.getKeyPacket(now + half, { metadataOnly: true });
+    if (p && Math.abs(p.timestamp - now) <= half) return p.timestamp;
+  } catch (_) { /* fall through */ }
+  return now;
+}
+
 // Move the playhead to the previous or next keyframe relative to its current position.
 let keyJumpBusy = false;
 async function jumpKeyframe(dir) {
@@ -421,13 +434,15 @@ async function jumpKeyframe(dir) {
     if (state.previewMode === 'video') $('#player').pause();
     const now = currentTime();
     const opts = { metadataOnly: true };
+    // The player reports times that can sit a fraction of a millisecond either side of a frame's true timestamp,
+    // so treat any keyframe within half a frame of the playhead as "the one we're on".
+    const half = frameStep() / 2;
     let target = null;
     if (dir < 0) {
-      // Last keyframe strictly before the playhead (allow a little slack so repeated presses keep moving back).
-      const pkt = await state.packetSink.getKeyPacket(now - 0.002, opts);
+      const pkt = await state.packetSink.getKeyPacket(now - half, opts);
       target = pkt ? pkt.timestamp : 0;
     } else {
-      const at = await state.packetSink.getKeyPacket(now, opts);
+      const at = await state.packetSink.getKeyPacket(now + half, opts);
       const next = at ? await state.packetSink.getNextKeyPacket(at, opts) : await state.packetSink.getFirstKeyPacket(opts);
       if (next) target = next.timestamp;
     }
@@ -1244,8 +1259,8 @@ function wire() {
   bindTime('#cutTo', (t) => { state.cutTo = t; });
 
   const POINTS = { in: 'inPoint', out: 'outPoint', trim: 'trimAmount', cutFrom: 'cutFrom', cutTo: 'cutTo' };
-  $$('[data-set]').forEach((b) => b.addEventListener('click', () => {
-    state[POINTS[b.dataset.set]] = currentTime();
+  $$('[data-set]').forEach((b) => b.addEventListener('click', async () => {
+    state[POINTS[b.dataset.set]] = await playheadPoint();
     syncTimeInputs(); updateTimeline(); refreshPlan();
   }));
   $$('[data-go]').forEach((b) => b.addEventListener('click', () => seekTo(state[POINTS[b.dataset.go]])));
@@ -1329,8 +1344,8 @@ function wire() {
   window.addEventListener('beforeunload', (e) => { if (state.running) { e.preventDefault(); e.returnValue = ''; } });
 }
 
-function setPoint(which) {
-  const t = currentTime();
+async function setPoint(which) {
+  const t = await playheadPoint();
   if (state.tab === 'trim') { if (which === 'in') state.trimAmount = t; }
   else if (state.tab === 'cutout') { if (which === 'in') state.cutFrom = t; else state.cutTo = t; }
   else if (which === 'in') state.inPoint = t; else state.outPoint = t;
