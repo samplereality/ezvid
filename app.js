@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const APP_VERSION = '0.3.1'; // Semantic Versioning: MAJOR.MINOR.PATCH
+const APP_VERSION = '0.3.2'; // Semantic Versioning: MAJOR.MINOR.PATCH
 
 const MB = window.Mediabunny;
 const $ = (sel) => document.querySelector(sel);
